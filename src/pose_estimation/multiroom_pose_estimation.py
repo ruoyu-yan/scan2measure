@@ -152,6 +152,11 @@ def main():
     pano_names = cfg.get("pano_names", PANO_NAMES)
     # Important: Electron app MUST pass "use_local_filtering": true
     use_local = cfg.get("use_local_filtering", USE_LOCAL_FILTERING)
+    # Optional P2/P3 search-narrowing knobs (PanoPin seed ablation): default
+    # absent => None/30, identical behavior to today (filters are no-ops).
+    seed_trans_radius = cfg.get("seed_trans_radius", None)
+    seed_yaw_deg = cfg.get("seed_yaw_deg", None)
+    seed_yaw_tol = cfg.get("seed_yaw_tol", 30)
 
     pkl_3d_path = Path(cfg["pkl_3d_path"]) if cfg.get("pkl_3d_path") else ROOT / "data" / "debug_renderer" / pc_name / "3d_line_map.pkl"
     alignment_path = Path(cfg["alignment_path"]) if cfg.get("alignment_path") else ROOT / "data" / "sam3_room_segmentation" / pc_name / "demo6_alignment.json"
@@ -328,7 +333,9 @@ def main():
             print("\n[B0b] Generating translation grid from filtered sparse lines...")
             pano_trans_candidates = generate_translation_grid(
                 local_starts, local_ends,
-                num_trans=NUM_TRANS, chamfer_min_dist=CHAMFER_MIN_DIST)
+                num_trans=NUM_TRANS, chamfer_min_dist=CHAMFER_MIN_DIST,
+                center=pano_positions[pano_name] if seed_trans_radius else None,
+                radius=seed_trans_radius)
             n_trans = pano_trans_candidates.shape[0]
             print(f"    {n_trans} translation candidates")
 
@@ -383,7 +390,8 @@ def main():
 
         # -- B4: 24 rotation candidates ------------------------------------
         print("\n[B4] Building 24 rotation candidates...")
-        rotations, perms_expanded = build_rotation_candidates(principal_2d, principal_3d)
+        rotations, perms_expanded = build_rotation_candidates(principal_2d, principal_3d,
+                seed_yaw_deg=seed_yaw_deg, seed_yaw_tol=seed_yaw_tol)
         print(f"    rotations: {rotations.shape}")
 
         # -- B5: Rearrange intersections -----------------------------------

@@ -69,15 +69,19 @@ def ypr_from_rot(R):
 # 24 rotation candidates
 # ============================================================
 
-def build_rotation_candidates(principal_2d, principal_3d):
+def build_rotation_candidates(principal_2d, principal_3d, seed_yaw_deg=None, seed_yaw_tol=30):
     """Build 24 rotation candidates: 6 permutations × 4 det-preserving sign flips.
 
     Args:
         principal_2d: (3, 3) 2D vanishing directions
         principal_3d: (3, 3) 3D principal directions
+        seed_yaw_deg: optional seed yaw (degrees). When set, only keep
+            rotation candidates whose implied yaw is within seed_yaw_tol of
+            this value (search-narrowing only; does not change scoring).
+        seed_yaw_tol: yaw tolerance in degrees (default 30).
 
     Returns:
-        rotations: (24, 3, 3) tensor
+        rotations: (24, 3, 3) tensor (or fewer, if seed_yaw_deg narrows the set)
         perms_expanded: (24, 3) long tensor — permutation indices
     """
     device = principal_2d.device
@@ -107,6 +111,14 @@ def build_rotation_candidates(principal_2d, principal_3d):
     diag[:, 2, 2] = d
     rotations = V @ diag @ U_t  # (24, 3, 3)
 
+    if seed_yaw_deg is not None:
+        import numpy as _np
+        yaws = _np.degrees(_np.arctan2(rotations[:, 1, 0], rotations[:, 0, 0]))  # yaw about world Z
+        diff = _np.abs((yaws - float(seed_yaw_deg) + 180) % 360 - 180)
+        keep = diff <= float(seed_yaw_tol)
+        if keep.any():
+            rotations, perms_expanded = rotations[keep], perms_expanded[keep]
+
     return rotations, perms_expanded
 
 
@@ -115,7 +127,7 @@ def build_rotation_candidates(principal_2d, principal_3d):
 # ============================================================
 
 def generate_translation_grid(starts, ends, num_trans=1700, chamfer_min_dist=0.3,
-                               spacing=None):
+                               spacing=None, center=None, radius=None):
     """Quantile-based 3D grid matching FGPL's generate_trans_points().
 
     Uses line midpoints to build an adaptive grid where denser regions of the
@@ -128,6 +140,10 @@ def generate_translation_grid(starts, ends, num_trans=1700, chamfer_min_dist=0.3
         num_trans: target number of translation candidates (~1700)
         chamfer_min_dist: min distance from midpoints to keep
         spacing: ignored (kept for API compatibility)
+        center: optional (2,)/(3,) seed XY center. When both center and
+            radius are set, only keep grid points within radius of center
+            (XY plane) -- search-narrowing only; does not change scoring.
+        radius: optional radius in meters (paired with center).
 
     Returns:
         (N_t, 3) translation candidates
@@ -182,7 +198,16 @@ def generate_translation_grid(starts, ends, num_trans=1700, chamfer_min_dist=0.3
         chamfer = (batch.unsqueeze(1) - sample_mid.unsqueeze(0)).norm(dim=-1).min(dim=1).values
         keep[i:i+chunk] = chamfer > chamfer_min_dist
 
-    return trans[keep]
+    trans = trans[keep]
+
+    if center is not None and radius is not None:
+        import numpy as _np
+        c = _np.asarray(center)[:2]
+        keep = _np.linalg.norm(_np.asarray(trans)[:, :2] - c, axis=1) <= float(radius)
+        if keep.any():
+            trans = trans[keep]
+
+    return trans
 
 
 # ============================================================
