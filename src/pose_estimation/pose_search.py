@@ -132,11 +132,20 @@ def build_rotation_candidates(principal_2d, principal_3d,
     if up_world is None:
         return rotations, perms_expanded
 
+    # These candidates live in the CANONICAL frame, not the world frame: precompute_xdf_3d
+    # rotates all 3D geometry by canonical_rot = principal_3d, and the search emits
+    # R_world = R_cand @ principal_3d (pose_search.py:334, :501). So gravity must be carried
+    # into canonical coordinates before the constraint is applied:
+    #     R_world @ up_world  ==  R_cand @ (principal_3d @ up_world)
+    # Filtering R_cand against a raw world-frame up_world silently selects the wrong axis
+    # whenever principal_3d != I (it is a signed permutation in practice).
     uw = torch.as_tensor(up_world, device=device, dtype=rotations.dtype)
     uc = torch.as_tensor(up_cam, device=device, dtype=rotations.dtype)
-    uw = uw / uw.norm()
+    up_can = principal_3d.to(device=device, dtype=rotations.dtype) @ (uw / uw.norm())
+    up_can = up_can / up_can.norm()
     uc = uc / uc.norm()
-    cos_tilt = (rotations @ uw) @ uc                       # (24,)
+
+    cos_tilt = (rotations @ up_can) @ uc                    # (24,)
     keep = cos_tilt >= float(np.cos(np.radians(max_tilt_deg)))
 
     if not bool(keep.any()):
