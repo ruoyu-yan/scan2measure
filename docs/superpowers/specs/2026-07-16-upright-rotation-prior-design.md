@@ -127,3 +127,48 @@ arm (22 panos, ~8 min) with `upright_prior: true` and compare against the commit
 
 If a pano *other than* those two survives as aliased, the model in §2 is wrong and the result must
 be re-examined rather than accepted.
+
+---
+
+## 7. Validation result (2026-07-16, measured)
+
+Re-ran `manhattan_export` (22 panos, seed bit-identical) with `upright_prior: true`. The prior
+kept **4/24** candidates per pano and the XDF search went 1.0s -> 0.1s.
+
+| metric | baseline | predicted | **measured** |
+|---|---|---|---|
+| rotation locked (<=45°) | 10/22 | ~20/22 | **15/22** |
+| translation median | 0.960 m | < 0.10 m | **0.084 m** |
+| rotation median | 89.9° | — | **1.8°** |
+| regressions | — | 0 | **0** |
+| still aliased | 12 | exactly 2 | **7** |
+
+**The prediction was NOT met, and the model in §2 was incomplete.** The reasoning error: 8 selected
+poses were non-upright, and I assumed each would become *correct* once the impossible candidates
+were removed. But a pano only selected an impossible pose because its discriminator was weak — and a
+weak discriminator choosing among the 4 remaining upright candidates still fails. Non-upright poses
+were a **symptom** of weak discrimination, not its cause.
+
+The 4 upright candidates differ only by yaw (0/90/180/270°), so the residual failures are **pure yaw
+aliasing** (89-179°). Of the 7 survivors, **3 are wrong-room panos** (`1a557181`, `da0bb9ad`,
+`2b70fafb`, 14-27 m out) — PanoPin room errors, not FGPL rotation failures. Among right-room panos
+the lock rate is **10/19 -> 15/19**.
+
+**Verdict: keep the prior.** Strict improvement, zero regressions, 11x better translation median,
+~10x faster search. But it does NOT solve the 180° flip alone — the residual yaw ambiguity responds
+to the de-crowding lever instead (the 5-seed room-anchored arm locks 5/5 with the prior off), and
+the rotation-margin signal (§5) detects what neither fixes. The three are complementary.
+
+### Implementation note — a frame bug the first test could not catch
+
+The first implementation filtered candidates against a raw **world**-frame `up_world`. The candidates
+are in the **canonical** frame (`precompute_xdf_3d` rotates geometry by `canonical_rot =
+principal_3d`; the search emits `R_world = R_cand @ principal_3d`). With the real
+`principal_3d = [[0,0,-1],[0,-1,0],[-1,0,0]]`, world +Z is canonical -X, so it selected exactly the
+wrong four candidates: rotation locked went 10/22 -> **0/22**.
+
+The unit test passed because it used `principal_3d = eye(3)`, which makes canonical == world and
+hides the bug completely. Tests now use the real non-identity `principal_3d` and assert in the
+**world** frame (`R_cand @ principal_3d`), verifying that exactly the 4 world-upright candidates of
+the 24 survive. The falsifiable prediction is what surfaced the failure; a vaguer criterion
+("check whether rotation improves") would have let a 1.19 m median pass as noise.
