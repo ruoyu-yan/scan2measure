@@ -56,6 +56,13 @@ POINT_GAMMA = 0.2
 NUM_TRANS = 1700
 CHAMFER_MIN_DIST = 0.3
 TOP_K = 10
+# Upright prior (opt-in): keep only rotation candidates that stand the camera up. The 24
+# candidates are the full octahedral group, so 20 of them tip or invert the camera -- poses
+# that are impossible for tripod capture and a measured cause of ~90-180 deg errors. See
+# docs/superpowers/specs/2026-07-16-upright-rotation-prior-design.md.
+UPRIGHT_PRIOR = False          # default off: preserves the original 24-candidate behaviour
+UP_WORLD = [0.0, 0.0, 1.0]     # gravity in the POINT CLOUD frame (Z-up clouds only)
+MAX_TILT_DEG = 10.0            # tripod capture tilts <1 deg, so this is generous
 INLIER_THRES_2D = 0.05
 INLIER_THRES_3D = 0.05
 INTERSECT_THRES_2D = 0.1
@@ -152,6 +159,12 @@ def main():
     pano_names = cfg.get("pano_names", PANO_NAMES)
     # Important: Electron app MUST pass "use_local_filtering": true
     use_local = cfg.get("use_local_filtering", USE_LOCAL_FILTERING)
+    # Upright prior: restrict the 24 rotation candidates to physically-possible (upright)
+    # cameras. Opt-in; up_world is the gravity axis IN THE POINT CLOUD FRAME, so [0,0,1]
+    # is only right for a gravity-aligned (Z-up) cloud.
+    upright_prior = cfg.get("upright_prior", UPRIGHT_PRIOR)
+    up_world = cfg.get("up_world", UP_WORLD)
+    max_tilt_deg = cfg.get("max_tilt_deg", MAX_TILT_DEG)
 
     pkl_3d_path = Path(cfg["pkl_3d_path"]) if cfg.get("pkl_3d_path") else ROOT / "data" / "debug_renderer" / pc_name / "3d_line_map.pkl"
     alignment_path = Path(cfg["alignment_path"]) if cfg.get("alignment_path") else ROOT / "data" / "sam3_room_segmentation" / pc_name / "demo6_alignment.json"
@@ -383,7 +396,15 @@ def main():
 
         # -- B4: 24 rotation candidates ------------------------------------
         print("\n[B4] Building 24 rotation candidates...")
-        rotations, perms_expanded = build_rotation_candidates(principal_2d, principal_3d)
+        # Filtering here (before [B5]) keeps the whole chain consistent for free: [B5], the
+        # XDF search and the top-K refinement all derive from perms_expanded.
+        rotations, perms_expanded = build_rotation_candidates(
+            principal_2d, principal_3d,
+            up_world=up_world if upright_prior else None,
+            max_tilt_deg=max_tilt_deg)
+        if upright_prior:
+            print(f"    upright prior: {rotations.shape[0]}/24 candidates kept "
+                  f"(up_world={up_world}, max_tilt_deg={max_tilt_deg})")
         print(f"    rotations: {rotations.shape}")
 
         # -- B5: Rearrange intersections -----------------------------------

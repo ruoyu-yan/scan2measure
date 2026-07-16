@@ -69,16 +69,38 @@ def ypr_from_rot(R):
 # 24 rotation candidates
 # ============================================================
 
-def build_rotation_candidates(principal_2d, principal_3d):
-    """Build 24 rotation candidates: 6 permutations × 4 det-preserving sign flips.
+def build_rotation_candidates(principal_2d, principal_3d,
+                              up_world=None, up_cam=(0, 0, 1), max_tilt_deg=10.0):
+    """Build 24 rotation candidates: 6 permutations × 4 det-preserving sign flips,
+    optionally filtered to the physically-upright ones.
+
+    The 24 candidates are the full octahedral rotation group — every orientation-preserving
+    way to map the panorama's vanishing directions onto the map's principal directions.
+    Nothing in that enumeration knows which way is down, so 20 of the 24 tip or invert the
+    camera. For tripod-mounted capture those poses are impossible, and letting them into the
+    XDF search is a documented cause of ~90-180° rotation errors: of 12 aliased panos on an
+    Area_3 Manhattan scene, 8 had the camera on its side and 2 were upside-down (spec
+    docs/superpowers/specs/2026-07-16-upright-rotation-prior-design.md).
+
+    Passing `up_world` restricts the candidates to cameras standing upright:
+
+        (R @ up_world) · up_cam  >=  cos(max_tilt_deg)
+
+    `R` maps world→camera (pose_refine treats it that way), and `up_cam=(0,0,1)` because
+    sphere_geometry.equirect_to_sphere maps the top image row to +z.
 
     Args:
         principal_2d: (3, 3) 2D vanishing directions
         principal_3d: (3, 3) 3D principal directions
+        up_world: (3,) gravity direction in the MAP frame, or None to disable filtering
+            (default — preserves the original 24-candidate behaviour exactly). Only
+            [0,0,1] for a gravity-aligned (Z-up) cloud; pass the true axis otherwise.
+        up_cam: (3,) up direction in the camera frame. Fixed by the equirect convention.
+        max_tilt_deg: tolerance in degrees. Tripod capture tilts <1°, so 10 is generous.
 
     Returns:
-        rotations: (24, 3, 3) tensor
-        perms_expanded: (24, 3) long tensor — permutation indices
+        rotations: (N, 3, 3) tensor — N = 24 unfiltered, ~4 with an upright prior
+        perms_expanded: (N, 3) long tensor — permutation indices
     """
     device = principal_2d.device
     perm_indices = list(iter_perms(range(3)))  # 6 permutations
@@ -107,7 +129,28 @@ def build_rotation_candidates(principal_2d, principal_3d):
     diag[:, 2, 2] = d
     rotations = V @ diag @ U_t  # (24, 3, 3)
 
-    return rotations, perms_expanded
+    if up_world is None:
+        return rotations, perms_expanded
+
+    uw = torch.as_tensor(up_world, device=device, dtype=rotations.dtype)
+    uc = torch.as_tensor(up_cam, device=device, dtype=rotations.dtype)
+    uw = uw / uw.norm()
+    uc = uc / uc.norm()
+    cos_tilt = (rotations @ uw) @ uc                       # (24,)
+    keep = cos_tilt >= float(np.cos(np.radians(max_tilt_deg)))
+
+    if not bool(keep.any()):
+        # Fail loud, not silent: every candidate tipped the camera, which almost always
+        # means up_world is wrong for this cloud (e.g. [0,0,1] on a non-gravity-aligned
+        # scan). Returning an empty set would crash the search downstream; returning 24
+        # quietly would hide the misconfiguration.
+        print(f"    WARNING: upright prior kept 0/{rotations.shape[0]} rotation candidates "
+              f"(up_world={list(np.asarray(up_world, dtype=float))}, "
+              f"max_tilt_deg={max_tilt_deg}). Is the point cloud gravity-aligned? "
+              f"Falling back to all candidates.")
+        return rotations, perms_expanded
+
+    return rotations[keep], perms_expanded[keep]
 
 
 # ============================================================
