@@ -155,6 +155,18 @@ def get_local_mask(points_xy, pano_idx, pano_positions, voronoi_labels, margin, 
 def main():
     cfg = load_config()
 
+    # Determinism. pose_search.generate_translation_grid draws a torch.randperm to
+    # subsample line midpoints for its Chamfer filter, and nothing anywhere in this
+    # pipeline seeded torch. Left unseeded the same config yields different poses run
+    # to run: on an Area_3 Manhattan scene two runs moved 12 of 22 panoramas, one of
+    # them by 0.876 m / 89.2 deg. A seed cannot make poses more accurate -- it makes a
+    # run repeatable, which is what a pipeline stage owes its caller. The default is a
+    # fixed constant rather than data, so every scene gets the guarantee with nothing
+    # to supply or measure.
+    seed = int(cfg.get("random_seed", 0))
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
     pc_name = cfg.get("point_cloud_name", POINT_CLOUD_NAME)
     pano_names = cfg.get("pano_names", PANO_NAMES)
     # Important: Electron app MUST pass "use_local_filtering": true
