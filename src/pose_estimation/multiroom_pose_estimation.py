@@ -41,6 +41,7 @@ from pose_search import (
     xdf_coarse_search_from_precomputed,
 )
 from pose_refine import refine_pose
+import candidates as candidates_mod
 from visualize_pose import render_side_by_side, render_reprojection, render_topdown, render_topdown_composite
 from line_analysis import classify_lines
 
@@ -177,6 +178,10 @@ def main():
     upright_prior = cfg.get("upright_prior", UPRIGHT_PRIOR)
     up_world = cfg.get("up_world", UP_WORLD)
     max_tilt_deg = cfg.get("max_tilt_deg", MAX_TILT_DEG)
+    # Point_360's colour arbitration (candidates.py). Both default OFF: the Electron app's
+    # runs are unchanged, and FGPL's own choice below is made among the XDF candidates only.
+    seed_candidates_on = bool(cfg.get("seed_candidates", False))
+    export_candidates_on = bool(cfg.get("export_candidates", False))
 
     pkl_3d_path = Path(cfg["pkl_3d_path"]) if cfg.get("pkl_3d_path") else ROOT / "data" / "debug_renderer" / pc_name / "3d_line_map.pkl"
     alignment_path = Path(cfg["alignment_path"]) if cfg.get("alignment_path") else ROOT / "data" / "sam3_room_segmentation" / pc_name / "demo6_alignment.json"
@@ -447,6 +452,15 @@ def main():
 
         # -- B7: ICP refinement on top-K -----------------------------------
         print("\n[B7] ICP refinement on top-K candidates...")
+        if seed_candidates_on and use_local:
+            z_med = float(np.median([float(p['t'][2]) for p in top_poses]))
+            top_poses = list(top_poses) + candidates_mod.seed_candidates(
+                pano_positions[pano_name], z_med, rotations, cur_precomputed_3d['canonical_rot'],
+                inter_2d_per_rot, inter_2d_mask_per_rot, inter_2d_idx_per_rot)
+            print(f"    + {rotations.shape[0]} seed-position candidates at "
+                  f"({pano_positions[pano_name][0]:.2f}, {pano_positions[pano_name][1]:.2f}, {z_med:.2f})")
+        elif seed_candidates_on:
+            print("    seed_candidates ignored: no seed position without local filtering")
         candidates = []
 
         i3d = cur_inter_3d.numpy()
@@ -498,11 +512,16 @@ def main():
                 'n_matched': n_matched,
                 'n_tight': int(n_tight),
                 'avg_dist': float(avg_dist),
+                'origin': pose.get('origin', 'xdf'),
+                'rot_idx': int(pose['rot_idx']),
             })
 
         # Select best: highest tight inlier count, then lowest avg_dist
-        candidates.sort(key=lambda c: (-c['n_tight'], c['avg_dist']))
-        best = candidates[0]
+        # FGPL's own choice: among the XDF candidates only, as before the seed candidates
+        # existed, so camera_pose.json means the same thing with the flags on or off.
+        ranked = sorted((c for c in candidates if c['origin'] == 'xdf'),
+                        key=lambda c: (-c['n_tight'], c['avg_dist']))
+        best = ranked[0]
         final_R = best['R']
         final_t = best['t']
         matched_pairs = best['matched']
@@ -558,6 +577,11 @@ def main():
         with open(out_path, 'w') as f:
             json.dump(result, f, indent=2)
         print(f"    Saved to {out_path}")
+        if export_candidates_on:
+            cpath = pano_output_dir / "candidates.json"
+            candidates_mod.write_candidates(cpath, pano_name, candidates,
+                                            candidates_mod.index_of(best, candidates))
+            print(f"    Saved {cpath} ({len(candidates)} candidates)")
 
         # -- B9: Visualization ---------------------------------------------
         print("\n[B9] Generating visualizations...")
